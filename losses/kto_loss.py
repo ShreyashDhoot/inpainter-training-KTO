@@ -2,6 +2,28 @@ import torch
 import torch.nn.functional as F
 
 def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=0.1):
+    """KTO (Kahneman-Tversky Optimization) loss for preference learning.
+    
+    Computes a preference-based loss that encourages the trainable model to
+    make better predictions than the reference model on positive samples and
+    worse predictions on negative samples. Uses a log-sigmoid formulation.
+    
+    Args:
+        pred_train (torch.Tensor): Noise predictions from trainable UNet,
+                                  shape (batch_size, 4, H, W).
+        pred_ref (torch.Tensor): Noise predictions from reference UNet,
+                                shape (batch_size, 4, H, W).
+        noise (torch.Tensor): Original noise, shape (batch_size, 4, H, W).
+        label (torch.Tensor): Quality labels, shape (batch_size,).
+                             1.0 for positive samples, 0.0 for negative.
+        mask_l (torch.Tensor): Inpainting mask in latent space,
+                              shape (batch_size, 1, H, W). (unused)
+        beta (float): Temperature/scaling parameter for the loss.
+                     Controls the strength of preference signal. Defaults to 0.1.
+    
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
     mse_train = F.mse_loss(pred_train, noise, reduction="none").mean(dim=[1, 2, 3])
     mse_ref = F.mse_loss(pred_ref, noise, reduction="none").mean(dim=[1, 2, 3])
     log_ratio = -(mse_train - mse_ref)

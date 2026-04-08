@@ -15,18 +15,18 @@ from engine.evaluate import visual_eval
 from engine.train_one_epoch import train_loop
 
 def main():
-    with open("configs/inpaint.yaml", "r") as f:
-        cfg = yaml.safe_load(f)
+    with open("configs/inpaint.yaml", "r") as f: #opens the yaml config file 
+        cfg = yaml.safe_load(f) # loads cfg with configurations from yaml 
 
-    seed_everything(42)
-    device = "cuda"
+    seed_everything(42) # sets all the seeds to 42 for reproducability 
+    device = "cuda" 
 
-    run = init_wandb(cfg["output"]["wandb_project"], cfg)
+    run = init_wandb(cfg["output"]["wandb_project"], cfg) #initializes Wt & Bias for logging the training 
 
     train_ds = LatentInpaintDataset(
-        repo_id=cfg["model"]["hf_dataset_repo"],
-        split=cfg["data"]["train_subdir"],
-        cache_dir=cfg["data"]["cache_dir"],
+        repo_id=cfg["model"]["hf_dataset_repo"], #passes hf repo name from yml config file 
+        split=cfg["data"]["train_subdir"], # passes the split to be used from hf repo 
+        cache_dir=cfg["data"]["cache_dir"], #passes file loc to dump cache 
     )
     val_ds = LatentInpaintDataset(
         repo_id=cfg["model"]["hf_dataset_repo"],
@@ -35,7 +35,7 @@ def main():
     )
 
     train_loader = DataLoader(
-        train_ds,
+        train_ds, 
         batch_size=cfg["training"]["batch_size"],
         shuffle=True,
         num_workers=cfg["training"]["num_workers"],

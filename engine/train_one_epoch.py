@@ -23,6 +23,33 @@ def train_loop(
     cfg,
     device="cuda",
 ):
+    """Main training loop for KTO-based inpainting model refinement.
+    
+    Implements the complete training loop including:
+    - Forward pass through trainable and reference UNets
+    - KTO loss computation with preference-based learning
+    - Gradient accumulation and mixed precision training
+    - Periodic checkpointing and visual evaluation
+    - Learning rate scheduling and metric logging
+    
+    Args:
+        unet (UNet2DConditionModel): Trainable UNet model.
+        ref_unet (UNet2DConditionModel): Frozen reference UNet for KTO loss.
+        vae (AutoencoderKL): VAE for encoding/decoding images.
+        text_enc (CLIPTextModel): Text encoder for prompt embeddings.
+        scheduler (DDPMScheduler): Noise scheduler for diffusion.
+        optimizer (torch.optim.AdamW): Optimizer for UNet parameters.
+        lr_sched (torch.optim.lr_scheduler.LambdaLR): Learning rate scheduler.
+        scaler (torch.amp.GradScaler): Gradient scaler for mixed precision.
+        train_loader (DataLoader): Training data loader.
+        pipe (StableDiffusionInpaintPipeline): Full inpainting pipeline.
+        val_vis_samples (list): Samples for visual evaluation.
+        wandb_log_fn (callable): Function to log metrics to weights & biases.
+        save_fn (callable): Function to save checkpoints.
+        visual_eval_fn (callable): Function to perform visual evaluation.
+        cfg (dict): Training configuration from YAML file.
+        device (str): Device to train on. Defaults to 'cuda'.
+    """
     unet.train()
     ref_unet.eval()
     vae.eval()

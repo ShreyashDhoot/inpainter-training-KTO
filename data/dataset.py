@@ -9,7 +9,30 @@ from huggingface_hub import snapshot_download
 
 
 class LatentInpaintDataset(torch.utils.data.Dataset):
+    """PyTorch dataset for loading inpainting data from Parquet files.
+    
+    Loads latent representations and masks from Parquet files, either from
+    a HuggingFace Hub repository or a local directory. Stores cumulative
+    row indices for efficient indexing across multiple files.
+    """
+    
     def __init__(self, repo_id=None, local_dir=None, split="train", cache_dir="./hf_cache"):
+        """Initialize the dataset.
+        
+        Args:
+            repo_id (str, optional): HuggingFace Hub dataset repository ID.
+                                    Either repo_id or local_dir must be provided.
+            local_dir (str, optional): Local directory containing Parquet files
+                                      or split subdirectories.
+            split (str): Name of the split subdirectory (e.g., 'train', 'val').
+                        Defaults to 'train'.
+            cache_dir (str): Directory to cache downloaded dataset.
+                           Defaults to './hf_cache'.
+        
+        Raises:
+            ValueError: If both repo_id and local_dir are None.
+            FileNotFoundError: If no Parquet files are found in the dataset directory.
+        """
         self.repo_id = repo_id
         self.split = split
         self.cache_dir = cache_dir
@@ -39,19 +62,60 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
             self.cum_rows.append(self.cum_rows[-1] + n)
 
     def __len__(self):
+        """Return total number of samples in the dataset.
+        
+        Returns:
+            int: Total number of rows across all Parquet files.
+        """
         return self.cum_rows[-1]
 
     def _locate(self, idx):
+        """Locate which file and local index corresponds to a global index.
+        
+        Uses binary search on cumulative row counts to efficiently find
+        which Parquet file contains a sample and its local index within that file.
+        
+        Args:
+            idx (int): Global sample index.
+        
+        Returns:
+            tuple: (file_idx, local_idx) - Parquet file index and local row index.
+        """
         file_idx = bisect.bisect_right(self.cum_rows, idx) - 1
         local_idx = idx - self.cum_rows[file_idx]
         return file_idx, local_idx
 
     def _read_row(self, f, local_idx):
+        """Read a single row from a Parquet file.
+        
+        Args:
+            f (str): Path to Parquet file.
+            local_idx (int): Row index within the file.
+        
+        Returns:
+            dict: Dictionary with keys 'z0', 'masked_latent', 'mask_latent',
+                 'input_ids', 'label' containing raw data from the Parquet file.
+        """
         table = pq.read_table(f)
         row = table.slice(local_idx, 1).to_pylist()[0]
         return row
 
     def __getitem__(self, idx):
+        """Retrieve a sample from the dataset.
+        
+        Locates the sample, reads it from disk, and converts to PyTorch tensors.
+        
+        Args:
+            idx (int): Sample index.
+        
+        Returns:
+            dict: Dictionary containing:
+                - 'z0' (torch.Tensor): Clean latent, shape (4, H, W).
+                - 'masked_latent' (torch.Tensor): Masked latent, shape (4, H, W).
+                - 'mask_latent' (torch.Tensor): Inpainting mask, shape (1, H, W).
+                - 'input_ids' (torch.Tensor): Text prompt token IDs.
+                - 'label' (torch.Tensor): Quality label for KTO loss.
+        """
         file_idx, local_idx = self._locate(idx)
         row = self._read_row(self.files[file_idx], local_idx)
 
