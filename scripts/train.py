@@ -51,7 +51,7 @@ def main():
         cfg["model"]["base_model"], 
         torch_dtype=torch.float16,
         safety_checker=None,
-    ).to(device)
+    )
 
     #initialized the unet 
     unet = pipe.unet
@@ -69,6 +69,10 @@ def main():
         )
         unet = get_peft_model(unet, lora_config)
         unet.print_trainable_parameters()
+
+    pipe.unet = unet
+    pipe = pipe.to(device)
+    unet = pipe.unet
     
     # make a deep copy for reference net 
     ref_unet = copy.deepcopy(unet).eval()
