@@ -58,8 +58,9 @@ def train_loop(
     global_step = 0
     accum_loss = 0.0
     grad_norm = torch.tensor(0.0, device=device)
+    max_epochs = cfg["training"].get("max_epochs", 100)
 
-    for epoch in range(999999):
+    for epoch in range(max_epochs):
         for batch in train_loader:
             z0 = batch["z0"].to(device)
             masked_latent = batch["masked_latent"].to(device)

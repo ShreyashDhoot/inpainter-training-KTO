@@ -18,6 +18,7 @@ training:
   lr: 1.0e-5
   warmup_steps: 100
   max_steps: 5000
+  max_epochs: 100
   batch_size: 4
   grad_accum_steps: 4
   beta: 0.1
