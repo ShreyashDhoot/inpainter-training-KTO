@@ -69,17 +69,17 @@ def train_loop(
             label = batch["label"].to(device)
 
             with torch.no_grad():
-                enc_hidden = text_enc(input_ids).last_hidden_state
+                enc_hidden = text_enc(input_ids).last_hidden_state #<== tokenize prompt for CLIP to use 
 
-            t = torch.randint(0, scheduler.config.num_train_timesteps, (z0.shape[0],), device=device)
-            noise = torch.randn_like(z0)
-            zt = q_sample(z0, t, noise, scheduler)
+            t = torch.randint(0, scheduler.config.num_train_timesteps, (z0.shape[0],), device=device) # sample random diffusion timestep 
+            noise = torch.randn_like(z0) # generate random noise resembling og image latent 
+            zt = q_sample(z0, t, noise, scheduler) #random noise added latent zt
 
             with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                pred_train = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent)
+                pred_train = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with trainable net
                 with torch.no_grad():
-                    pred_ref = unet_forward(ref_unet, zt, t, enc_hidden, mask_l, masked_latent)
-                loss = kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=cfg["training"]["beta"])
+                    pred_ref = unet_forward(ref_unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with reference net
+                loss = kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=cfg["training"]["beta"]) 
                 loss = loss / cfg["training"]["grad_accum_steps"]
 
             with torch.no_grad():
