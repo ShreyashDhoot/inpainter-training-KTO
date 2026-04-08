@@ -1,6 +1,13 @@
 model:
   base_model: runwayml/stable-diffusion-inpainting
   hf_dataset_repo: ShreyashDhoot/dataset_latents_VAE
+  use_lora: true
+  lora:
+    r: 16
+    lora_alpha: 32
+    target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+    lora_dropout: 0.05
+    bias: "none"
 
 data:
   train_subdir: train

@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 from diffusers import StableDiffusionInpaintPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler
 from transformers import CLIPTextModel
+from peft import LoraConfig, get_peft_model
 
 from data.dataset import LatentInpaintDataset
 from data.collate import latent_collate
@@ -45,19 +46,44 @@ def main():
 
     val_vis_samples = [val_ds[i] for i in range(min(4, len(val_ds)))]
 
+    # setting up the stable diffusion pipeline 
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        cfg["model"]["base_model"],
+        cfg["model"]["base_model"], 
         torch_dtype=torch.float16,
         safety_checker=None,
     ).to(device)
 
+    #initialized the unet 
     unet = pipe.unet
+    
+    # ================================================
+    # LoRA injection setup
+    # ================================================
+    if cfg["model"].get("use_lora", False):
+        lora_config = LoraConfig(
+            r=cfg["model"]["lora"]["r"],
+            lora_alpha=cfg["model"]["lora"]["lora_alpha"],
+            target_modules=cfg["model"]["lora"]["target_modules"],
+            lora_dropout=cfg["model"]["lora"]["lora_dropout"],
+            bias=cfg["model"]["lora"]["bias"],
+        )
+        unet = get_peft_model(unet, lora_config)
+        unet.print_trainable_parameters()
+    
+    # make a deep copy for reference net 
     ref_unet = copy.deepcopy(unet).eval()
     for p in ref_unet.parameters():
+        '''
+        turn of gradients for the reference model 
+        '''
         p.requires_grad = False
 
+    # set up common image encoder for both the models 
     vae = pipe.vae.eval()
+    
+    #setting up common text encoder 
     text_enc = pipe.text_encoder.eval()
+    # setting up the schedular
     scheduler = DDPMScheduler.from_pretrained(cfg["model"]["base_model"], subfolder="scheduler")
 
     optimizer = torch.optim.AdamW(unet.parameters(), lr=cfg["training"]["lr"])
