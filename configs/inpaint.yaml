@@ -32,3 +32,8 @@ output:
   checkpoint_dir: ./checkpoints
   eval_dir: ./eval_outputs
   wandb_project: sd-inpaint-kto-safety
+  use_wandb: true
+  wandb_mode: online  # online, offline, or disabled
+  wandb_entity: null
+  wandb_run_name: null
+  wandb_tags: []
