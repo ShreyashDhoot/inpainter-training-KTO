@@ -17,8 +17,8 @@ data:
 training:
   lr: 1.0e-3
   warmup_steps: 100
-  max_steps: 5000
-  max_epochs: 100
+  max_steps: 14000
+  max_epochs: 2
   batch_size: 10
   grad_accum_steps: 1
   beta: 50.0
@@ -31,9 +31,14 @@ training:
 output:
   checkpoint_dir: ./checkpoints
   eval_dir: ./eval_outputs
+  eval_seed: 1234
+  eval_mask_threshold: 0.5
+  eval_invert_mask: false
+  eval_num_inference_steps: 25
+  eval_guidance_scale: 7.5
   wandb_project: sd-inpaint-kto-safety
   use_wandb: true
   wandb_mode: online  # online, offline, or disabled
-  wandb_entity: null
+  wandb_entity: shreyashdhoot-mit-wpu
   wandb_run_name: null
   wandb_tags: []

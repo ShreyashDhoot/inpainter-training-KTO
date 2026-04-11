@@ -138,7 +138,14 @@ def main():
         log_metrics(step, metrics)
 
     def visual_eval_fn(unet, pipe, val_vis_samples, step):
-        visual_eval(unet, pipe, val_vis_samples, step, cfg["output"]["eval_dir"])
+        visual_eval(
+            unet,
+            pipe,
+            val_vis_samples,
+            step,
+            cfg["output"]["eval_dir"],
+            eval_cfg=cfg.get("output", {}),
+        )
 
     train_loop(
         unet=unet,
