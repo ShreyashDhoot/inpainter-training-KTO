@@ -57,17 +57,22 @@ def visual_eval(unet, pipe, val_vis_samples, step, out_dir):
         unet (UNet2DConditionModel): The trainable UNet model.
         pipe (StableDiffusionInpaintPipeline): The inpainting pipeline.
         val_vis_samples (list): List of validation samples containing 'z0',
-                              'mask_latent', and 'prompt' keys.
+                              'mask_latent', and optionally 'prompt' keys.
         step (int): Current training step (used in filename).
         out_dir (str): Directory to save generated images.
     """
     os.makedirs(out_dir, exist_ok=True)
     unet.eval()
+    
+    # Default prompt if not provided in dataset
+    default_prompt = "a high-quality inpainted image"
+    
     with torch.no_grad():
         for i, sample in enumerate(val_vis_samples[:4]):
             z0 = sample["z0"]
             mask_latent = sample["mask_latent"]
-            prompt = sample["prompt"]
+            # Use provided prompt or fall back to default
+            prompt = sample.get("prompt", default_prompt)
 
             img = decode_latent_to_pil(pipe.vae, z0)
             mask = latent_mask_to_pil(mask_latent)

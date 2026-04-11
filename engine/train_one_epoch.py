@@ -105,23 +105,25 @@ def train_loop(
                 lr_sched.step()
                 optimizer.zero_grad(set_to_none=True)
 
-            if global_step % cfg["training"]["log_every"] == 0:
-                wandb_log_fn({
-                    "train/loss": accum_loss,
-                    "train/log_ratio_pos": log_ratio_pos.item(),
-                    "train/log_ratio_neg": log_ratio_neg.item(),
-                    "train/reward_gap": reward_gap.item(),
-                    "train/grad_norm": grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm),
-                    "train/lr": lr_sched.get_last_lr()[0],
-                    "train/epoch": epoch,
-                }, step=global_step)
-                print(f"step={global_step} loss={accum_loss:.4f} reward_gap={reward_gap.item():.4f}")
-                accum_loss = 0.0
+                # Increment global_step only when optimizer updates (i.e., after gradient accumulation)
+                global_step += 1
 
-            if global_step % cfg["training"]["save_every"] == 0 and global_step > 0:
-                save_fn(global_step, unet, optimizer, lr_sched, scaler, epoch)
-                visual_eval_fn(unet, pipe, val_vis_samples, global_step)
+                if global_step % cfg["training"]["log_every"] == 0:
+                    wandb_log_fn({
+                        "train/loss": accum_loss,
+                        "train/log_ratio_pos": log_ratio_pos.item(),
+                        "train/log_ratio_neg": log_ratio_neg.item(),
+                        "train/reward_gap": reward_gap.item(),
+                        "train/grad_norm": grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm),
+                        "train/lr": lr_sched.get_last_lr()[0],
+                        "train/epoch": epoch,
+                    }, step=global_step)
+                    print(f"step={global_step} loss={accum_loss:.4f} reward_gap={reward_gap.item():.4f}")
+                    accum_loss = 0.0
 
-            global_step += 1
-            if global_step >= cfg["training"]["max_steps"]:
-                return
+                if global_step % cfg["training"]["save_every"] == 0:
+                    save_fn(global_step, unet, optimizer, lr_sched, scaler, epoch)
+                    visual_eval_fn(unet, pipe, val_vis_samples, global_step)
+
+                if global_step >= cfg["training"]["max_steps"]:
+                    return
