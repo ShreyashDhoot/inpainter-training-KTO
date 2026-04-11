@@ -3,9 +3,13 @@ import yaml
 import copy
 import torch
 from torch.utils.data import DataLoader
+from dotenv import load_dotenv
 from diffusers import StableDiffusionInpaintPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler
 from transformers import CLIPTextModel
 from peft import LoraConfig, get_peft_model
+
+# Load environment variables from .env file
+load_dotenv()
 
 from data.dataset import LatentInpaintDataset
 from data.collate import latent_collate
