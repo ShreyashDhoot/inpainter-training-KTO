@@ -142,6 +142,26 @@ Common logged values include:
 - If training fails on startup, confirm that CUDA is available and that the base model can be downloaded.
 - If W&B logging is not desired, disable it in `configs/inpaint.yaml` under `output.use_wandb` or set `output.wandb_mode` to `disabled`.
 
+## W&B Sync and Cleanup
+
+If local runs are not visible in W&B yet, sync all local run folders:
+
+```bash
+python scripts/wandb_sync_and_clean.py --sync
+```
+
+Sync and then clean local W&B files before pushing to GitHub:
+
+```bash
+python scripts/wandb_sync_and_clean.py --sync --clean --yes
+```
+
+Preview all actions without making changes:
+
+```bash
+python scripts/wandb_sync_and_clean.py --sync --clean --dry-run
+```
+
 ## License
 
 Add a license here if one applies to this repository.

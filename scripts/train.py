@@ -20,7 +20,25 @@ def main():
         cfg = yaml.safe_load(f) # loads cfg with configurations from yaml 
 
     seed_everything(42) # sets all the seeds to 42 for reproducability 
-    device = "cuda" 
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for this training script, but no GPU is available.")
+
+    device = torch.device("cuda:0")
+    torch.cuda.set_device(device)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    gpu_name = torch.cuda.get_device_name(device)
+    print(f"Using GPU: {gpu_name}")
+
+    # Launch a tiny compute warmup to verify kernels execute on GPU immediately.
+    with torch.no_grad():
+        warmup_a = torch.randn((1024, 1024), device=device, dtype=torch.float16)
+        warmup_b = torch.randn((1024, 1024), device=device, dtype=torch.float16)
+        for _ in range(8):
+            warmup_a = warmup_a @ warmup_b
+        torch.cuda.synchronize(device)
+        del warmup_a, warmup_b
 
     run = init_wandb(cfg["output"]["wandb_project"], cfg) #initializes Wt & Bias for logging the training 
 
@@ -41,6 +59,8 @@ def main():
         shuffle=True,
         num_workers=cfg["training"]["num_workers"],
         pin_memory=True,
+        persistent_workers=cfg["training"]["num_workers"] > 0,
+        prefetch_factor=4 if cfg["training"]["num_workers"] > 0 else None,
         collate_fn=latent_collate,
     )
 

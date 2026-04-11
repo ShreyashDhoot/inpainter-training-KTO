@@ -16,6 +16,7 @@ def decode_latent_to_pil(vae, latent):
         PIL.Image: Decoded image in RGB format.
     """
     latent = latent.unsqueeze(0) if latent.dim() == 3 else latent
+    latent = latent.to(device=vae.device, dtype=vae.dtype)
     latent = latent / vae.config.scaling_factor
     img = vae.decode(latent).sample
     img = (img / 2 + 0.5).clamp(0, 1)

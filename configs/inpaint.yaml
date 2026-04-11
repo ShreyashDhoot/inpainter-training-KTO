@@ -3,7 +3,7 @@ model:
   hf_dataset_repo: ShreyashDhoot/dataset_latents_VAE
   use_lora: true
   lora:
-    r: 16
+    r: 64
     lora_alpha: 32
     target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
     lora_dropout: 0.05
@@ -15,16 +15,16 @@ data:
   cache_dir: ./hf_cache
 
 training:
-  lr: 1.0e-5
+  lr: 1.0e-3
   warmup_steps: 100
   max_steps: 5000
   max_epochs: 100
-  batch_size: 4
-  grad_accum_steps: 4
-  beta: 1000.0
-  num_workers: 0
-  log_every: 50
-  save_every: 500
+  batch_size: 10
+  grad_accum_steps: 1
+  beta: 50.0
+  num_workers: 5
+  log_every: 10
+  save_every: 10
   grad_clip_norm: 1.0
   mixed_precision: fp16
 
