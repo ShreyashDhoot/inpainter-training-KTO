@@ -36,17 +36,21 @@ def latent_mask_to_pil(mask_latent):
     Returns:
         PIL.Image: Mask as grayscale PIL Image (mode 'L').
     """
-    from PIL import Image
-    import numpy as np
-    m = mask_latent.detach().cpu()
+    m = mask_latent.detach().cpu().float()
     if m.dim() == 3:
         m = m[0]
-    m = m.numpy()
-    if m.max() <= 1.0:
-        m = (m * 255).astype("uint8")
-    else:
-        m = m.astype("uint8")
-    return Image.fromarray(m)
+
+    # Support common mask encodings: [0, 1], [0, 255], and [-1, 1].
+    if m.min().item() < 0.0:
+        m = (m + 1.0) / 2.0
+    elif m.max().item() > 1.0:
+        m = m / 255.0
+
+    m = m.clamp(0.0, 1.0)
+
+    # Use a hard binary mask for inpainting to avoid low-value noise repainting.
+    m = (m >= 0.5).to(torch.uint8) * 255
+    return Image.fromarray(m.numpy(), mode="L")
 
 def visual_eval(unet, pipe, val_vis_samples, step, out_dir):
     """Generate and save inpainting results for visual evaluation.
@@ -78,11 +82,16 @@ def visual_eval(unet, pipe, val_vis_samples, step, out_dir):
             img = decode_latent_to_pil(pipe.vae, z0)
             mask = latent_mask_to_pil(mask_latent)
 
+            # Keep eval sampling deterministic across checkpoints for fair comparison.
+            eval_device = pipe._execution_device if hasattr(pipe, "_execution_device") else pipe.device
+            generator = torch.Generator(device=eval_device).manual_seed(1234 + i)
+
             out = pipe(
                 prompt=prompt,
                 image=img,
                 mask_image=mask,
                 num_inference_steps=25,
+                generator=generator,
             ).images[0]
             out.save(os.path.join(out_dir, f"eval_step{step}_sample{i}.png"))
     unet.train()
