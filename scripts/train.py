@@ -19,6 +19,11 @@ from engine.checkpoint import save_checkpoint
 from engine.evaluate import visual_eval
 from engine.train_one_epoch import train_loop
 
+try:
+    from utils.plotting import plot_training_metrics
+except Exception:
+    plot_training_metrics = None
+
 def main():
     with open("configs/inpaint.yaml", "r") as f: #opens the yaml config file 
         cfg = yaml.safe_load(f) # loads cfg with configurations from yaml 
@@ -68,7 +73,7 @@ def main():
         collate_fn=latent_collate,
     )
 
-    val_vis_samples = [val_ds[i] for i in range(min(4, len(val_ds)))]
+    val_vis_samples = [val_ds[i] for i in range(min(10, len(val_ds)))]
 
     # setting up the stable diffusion pipeline 
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
@@ -128,6 +133,7 @@ def main():
 
     os.makedirs(cfg["output"]["checkpoint_dir"], exist_ok=True)
     os.makedirs(cfg["output"]["eval_dir"], exist_ok=True)
+    metric_history = []
 
     def save_fn(global_step, unet, optimizer, scheduler, scaler, epoch):
         ckpt_path = os.path.join(cfg["output"]["checkpoint_dir"], f"step_{global_step}.pt")
@@ -135,6 +141,9 @@ def main():
         unet.save_pretrained(f"checkpoint--{global_step}")
 
     def wandb_log_fn(metrics, step):
+        metric_row = {"step": int(step)}
+        metric_row.update(metrics)
+        metric_history.append(metric_row)
         log_metrics(step, metrics)
 
     def visual_eval_fn(unet, pipe, val_vis_samples, step):
@@ -165,6 +174,29 @@ def main():
         cfg=cfg,
         device=device,
     )
+
+    output_cfg = cfg.get("output", {})
+    if output_cfg.get("plot_metrics", True):
+        if plot_training_metrics is None:
+            print("Metric plotting is enabled but matplotlib/seaborn are unavailable. Skipping plots.")
+        else:
+            metrics_plot_dir = output_cfg.get(
+                "metrics_plot_dir",
+                os.path.join(output_cfg.get("eval_dir", "./eval_outputs"), "metrics_plots"),
+            )
+            smoothing_window = int(output_cfg.get("plot_smoothing_window", 5))
+            try:
+                generated_files = plot_training_metrics(
+                    metric_history,
+                    metrics_plot_dir,
+                    smoothing_window=smoothing_window,
+                )
+                if generated_files:
+                    print(f"Saved {len(generated_files)} metric artifacts to {metrics_plot_dir}")
+                else:
+                    print("No metric history was available, so no plots were generated.")
+            except Exception as err:
+                print(f"Metric plotting failed: {err}")
 
     finish_wandb()
 

@@ -82,6 +82,31 @@ def preprocess_mask_for_eval(mask_latent, target_size, threshold=0.5, invert=Fal
         mask = mask.resize(target_size, Image.NEAREST)
     return mask
 
+
+def _prompt_embeds_from_input_ids(pipe, input_ids, guidance_scale):
+    if input_ids is None:
+        return None, None
+
+    if input_ids.dim() == 1:
+        input_ids = input_ids.unsqueeze(0)
+
+    input_ids = input_ids.to(device=pipe.device, dtype=torch.long)
+    prompt_embeds = pipe.text_encoder(input_ids).last_hidden_state
+
+    negative_prompt_embeds = None
+    if guidance_scale > 1.0:
+        max_length = input_ids.shape[-1]
+        uncond_ids = pipe.tokenizer(
+            [""],
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(pipe.device)
+        negative_prompt_embeds = pipe.text_encoder(uncond_ids).last_hidden_state
+
+    return prompt_embeds, negative_prompt_embeds
+
 def visual_eval(unet, pipe, val_vis_samples, step, out_dir, eval_cfg=None):
     """Generate and save inpainting results for visual evaluation.
     
@@ -113,8 +138,15 @@ def visual_eval(unet, pipe, val_vis_samples, step, out_dir, eval_cfg=None):
         for i, sample in enumerate(val_vis_samples[:4]):
             z0 = sample["z0"]
             mask_latent = sample["mask_latent"]
+            input_ids = sample.get("input_ids")
             # Use provided prompt or fall back to default
             prompt = sample.get("prompt", default_prompt)
+
+            prompt_embeds, negative_prompt_embeds = _prompt_embeds_from_input_ids(
+                pipe,
+                input_ids,
+                eval_guidance,
+            )
 
             img = decode_latent_to_pil(pipe.vae, z0)
             mask = preprocess_mask_for_eval(
@@ -126,13 +158,24 @@ def visual_eval(unet, pipe, val_vis_samples, step, out_dir, eval_cfg=None):
 
             generator = torch.Generator(device=pipe.device).manual_seed(eval_seed + i)
 
-            out = pipe(
-                prompt=prompt,
-                image=img,
-                mask_image=mask,
-                num_inference_steps=eval_steps,
-                guidance_scale=eval_guidance,
-                generator=generator,
-            ).images[0]
+            if prompt_embeds is not None:
+                out = pipe(
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    image=img,
+                    mask_image=mask,
+                    num_inference_steps=eval_steps,
+                    guidance_scale=eval_guidance,
+                    generator=generator,
+                ).images[0]
+            else:
+                out = pipe(
+                    prompt=prompt,
+                    image=img,
+                    mask_image=mask,
+                    num_inference_steps=eval_steps,
+                    guidance_scale=eval_guidance,
+                    generator=generator,
+                ).images[0]
             out.save(os.path.join(out_dir, f"eval_step{step}_sample{i}.png"))
     unet.train()

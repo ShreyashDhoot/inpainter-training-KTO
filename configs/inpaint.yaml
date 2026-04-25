@@ -1,6 +1,6 @@
 model:
   base_model: runwayml/stable-diffusion-inpainting
-  hf_dataset_repo: ShreyashDhoot/dataset_latents_VAE
+  hf_dataset_repo: ShreyashDhoot/KTO-latents
   use_lora: true
   lora:
     r: 64
@@ -15,16 +15,16 @@ data:
   cache_dir: ./hf_cache
 
 training:
-  lr: 1.0e-3
-  warmup_steps: 100
+  lr: 5.0e-4
+  warmup_steps: 500
   max_steps: 14000
   max_epochs: 2
-  batch_size: 10
+  batch_size: 32
   grad_accum_steps: 1
-  beta: 50.0
-  num_workers: 5
+  beta: 500.0
+  num_workers: 16
   log_every: 10
-  save_every: 50
+  save_every: 250
   grad_clip_norm: 1.0
   mixed_precision: fp16
 
@@ -42,3 +42,6 @@ output:
   wandb_entity: shreyashdhoot-mit-wpu
   wandb_run_name: null
   wandb_tags: []
+  plot_metrics: true
+  metrics_plot_dir: ./eval_outputs/metrics_plots
+  plot_smoothing_window: 5
