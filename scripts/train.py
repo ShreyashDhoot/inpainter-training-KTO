@@ -73,7 +73,7 @@ def main():
         collate_fn=latent_collate,
     )
 
-    val_vis_samples = [val_ds[i] for i in range(min(10, len(val_ds)))]
+    val_vis_samples = [val_ds[i] for i in range(min(30, len(val_ds)))]
 
     # setting up the stable diffusion pipeline 
     pipe = StableDiffusionInpaintPipeline.from_pretrained(

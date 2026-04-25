@@ -16,12 +16,12 @@ data:
 
 training:
   lr: 5.0e-4
-  warmup_steps: 500
+  warmup_steps: 250
   max_steps: 14000
   max_epochs: 2
   batch_size: 32
   grad_accum_steps: 1
-  beta: 500.0
+  beta: 75.0
   num_workers: 16
   log_every: 10
   save_every: 250

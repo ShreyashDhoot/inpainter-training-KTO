@@ -135,7 +135,7 @@ def visual_eval(unet, pipe, val_vis_samples, step, out_dir, eval_cfg=None):
     eval_guidance = float(eval_cfg.get("eval_guidance_scale", 7.5))
 
     with torch.no_grad():
-        for i, sample in enumerate(val_vis_samples[:4]):
+        for i, sample in enumerate(val_vis_samples[:30]):
             z0 = sample["z0"]
             mask_latent = sample["mask_latent"]
             input_ids = sample.get("input_ids")
