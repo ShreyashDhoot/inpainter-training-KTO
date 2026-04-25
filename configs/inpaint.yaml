@@ -3,8 +3,8 @@ model:
   hf_dataset_repo: ShreyashDhoot/KTO-latents
   use_lora: true
   lora:
-    r: 64
-    lora_alpha: 32
+    r: 16
+    lora_alpha: 16
     target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
     lora_dropout: 0.05
     bias: "none"
@@ -15,15 +15,15 @@ data:
   cache_dir: ./hf_cache
 
 training:
-  lr: 5.0e-4
+  lr: 1.0e-4
   warmup_steps: 250
   max_steps: 14000
   max_epochs: 2
   batch_size: 32
   grad_accum_steps: 1
-  beta: 75.0
+  beta: 50.0
   num_workers: 16
-  log_every: 10
+  log_every: 50
   save_every: 250
   grad_clip_norm: 1.0
   mixed_precision: fp16

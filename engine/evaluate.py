@@ -2,6 +2,7 @@ import os
 import torch
 from PIL import Image
 import numpy as np
+from transformers import CLIPTokenizer
 
 def decode_latent_to_pil(vae, latent):
     """Decode a latent representation to a PIL image.
@@ -91,7 +92,9 @@ def _prompt_embeds_from_input_ids(pipe, input_ids, guidance_scale):
         input_ids = input_ids.unsqueeze(0)
 
     input_ids = input_ids.to(device=pipe.device, dtype=torch.long)
-    prompt_embeds = pipe.text_encoder(input_ids).last_hidden_state
+    target_dtype=pipe.unet.dtype 
+    attention_mask=(input_ids != pipe.tokenizer.pad_token_id).long()
+    prompt_embeds = pipe.text_encoder(input_ids,attention_mask=attention_mask).last_hidden_state.to(dtype=target_dtype)
 
     negative_prompt_embeds = None
     if guidance_scale > 1.0:
@@ -103,7 +106,8 @@ def _prompt_embeds_from_input_ids(pipe, input_ids, guidance_scale):
             truncation=True,
             return_tensors="pt",
         ).input_ids.to(pipe.device)
-        negative_prompt_embeds = pipe.text_encoder(uncond_ids).last_hidden_state
+        uncond_mask=(uncond_ids!=pipe.tokenizer.pad_token_id).long()
+        negative_prompt_embeds = pipe.text_encoder(uncond_ids,attention_mask=uncond_mask).last_hidden_state
 
     return prompt_embeds, negative_prompt_embeds
 
