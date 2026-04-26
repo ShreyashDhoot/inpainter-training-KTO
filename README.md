@@ -13,7 +13,7 @@ pipeline_tag: image-to-image
 
 # ShreyashDhoot/policy-tuned-inpainter
 
-**Last updated:** 2026-04-25 14:32
+**Last updated:** 2026-04-26 09:32
 
 ## Model Description
 
@@ -22,8 +22,11 @@ Base model: [`runwayml/stable-diffusion-inpainting`](https://huggingface.co/runw
 
 ## Checkpoints
 
-- `checkpoint--10`
 - `checkpoint--1000`
+- `checkpoint--1250`
+- `checkpoint--1500`
+- `checkpoint--1750`
+- `checkpoint--2000`
 - `checkpoint--250`
 - `checkpoint--500`
 - `checkpoint--750`

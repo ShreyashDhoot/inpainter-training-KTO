@@ -28,6 +28,7 @@ training:
   grad_clip_norm: 1.0
   mixed_precision: fp16
 
+
 output:
   checkpoint_dir: ./checkpoints
   eval_dir: ./eval_outputs

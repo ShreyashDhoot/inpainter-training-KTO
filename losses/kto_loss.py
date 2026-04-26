@@ -66,6 +66,15 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     # Scale preference signal by beta and apply sigmoid
     label_scale_g = label_sgn * beta * g_term_centered
     h = torch.sigmoid(label_scale_g)
+
+    #reconstruction regularization term 
+    unmask=(1-mask_l)
+    recon_loss=F.mse_loss(
+        pred_train * unmask.expand_as(pred_train),
+        noise * unmask.expand_as(noise),
+        reduction="mean"
+    )
+
     
     # KTO loss: (1 - h)
     # For safe samples (label_sgn=+1):
@@ -74,6 +83,6 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     # For unsafe samples (label_sgn=-1):
     #   - When g_term > kl (model worse): h→0, loss→1 (good!)
     #   - When g_term < kl (model better): h→1, loss→0 (bad!)
-    loss = (1.0 - h).mean()
+    loss = (1.0 - h).mean() + 0.3 * recon_loss
     
     return loss
