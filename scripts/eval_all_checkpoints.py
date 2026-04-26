@@ -16,6 +16,7 @@ from diffusers import StableDiffusionInpaintPipeline
 from peft import PeftModel, PeftConfig
 from data.dataset import LatentInpaintDataset
 from engine.evaluate import visual_eval
+from peft import PeftModel
 
 
 # === CONFIG ===
@@ -70,7 +71,9 @@ def main():
 
         # Load LoRA weights
         try:
-            pipe.load_lora_weights(ckpt_dir)
+            pipe.unet = PeftModel.from_pretrained(pipe.unet, ckpt_dir)
+            pipe.unet = pipe.unet.merge_and_unload()   # optional: bake weights in for faster inference
+            pipe.unet = pipe.unet.to("cuda", dtype=torch.float16)
         except Exception as e:
             print(f"  Failed to load LoRA weights from {ckpt_dir}: {e}")
             del pipe
