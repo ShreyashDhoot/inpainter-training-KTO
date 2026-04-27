@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 
-def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weight=1.0):
+def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weight=0):
     """KTO (Kahneman-Tversky Optimization) loss with KL-centering and preference weighting.
     
     Implements KTO loss that encourages the trainable model to outperform the
@@ -31,15 +31,20 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     Returns:
         torch.Tensor: Scalar KTO loss value.
     """
+    # broadcast the mask dimensions to fit the dimensions of the prediction 
+    mask_expanded = mask_l.expand_as(pred_train)
+
     # Compute MSE losses
     mse_train = F.mse_loss(pred_train, noise, reduction="none")
     mse_ref = F.mse_loss(pred_ref, noise, reduction="none")
 
+    ## setting to 0 is causing the model to hack the alignment and paint all the masked regions blue 
     # Apply mask weighting to emphasize inpainted regions
     if mask_l is not None:
         weight = 1.0 + mask_weight * mask_l.to(dtype=pred_train.dtype)
         mse_train = mse_train * weight.expand_as(mse_train)
         mse_ref = mse_ref * weight.expand_as(mse_ref)
+    
 
     # Average over spatial dimensions to get per-sample scalar loss
     mse_train = mse_train.mean(dim=[1, 2, 3])
@@ -49,7 +54,20 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     # g_term = mse_ref - mse_train
     # For safe samples, we want g_term < 0 (trainable model better)
     # For unsafe samples, we want g_term >= 0 (trainable model worse or equal)
-    g_term = mse_ref - mse_train
+
+    mask_pixels = mask_expanded.sum(dim=[1,2,3]).clamp(min=1)
+    mse_train_masked = ( mse_train * mask_expanded ).sum(dim=[1,2,3]) / mask_pixels
+    mse_ref_masked = ( mse_ref * mask_expanded ).sum(dim=[1,2,3]) / mask_pixels
+    g_term = mse_ref_masked - mse_train_masked
+
+    '''
+    masked pixels just countes the number of pixels inside the mask generated 
+    in mse_tain_mask , mse_ref_mask we take the mse_train/ref i.e the per pixel mse over the whole image 
+    and multiply it with the binary mask which leaves behind only the mse inside the mask 
+    so we get the average mse inside the mask for all 4 channels when divided by mask_pixels 
+    gterm = (how wrong ref was in mask) - (how wrong train was in mask)
+    
+    '''
     
     # KL-centering: compute mean KL divergence and normalize
     # This stabilizes training by preventing extreme values from dominating
