@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from diffusers import StableDiffusionInpaintPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler
 from transformers import CLIPTextModel
 from peft import LoraConfig, get_peft_model
+from diffusers.training_utils import EMAModel
 
 # Load environment variables from .env file
 load_dotenv()
@@ -103,13 +104,22 @@ def main():
     pipe = pipe.to(device)
     unet = pipe.unet
     
+    '''
+    replacing this with ema-lora i.e the reference model remains static and as the learner 
+    moves away from the reference it starts deviating and making blue patches so trying to 
+    update the reference so the learner moves in a better direction for optimization
     # make a deep copy for reference net 
     ref_unet = copy.deepcopy(unet).eval()
     for p in ref_unet.parameters():
-        '''
-        turn of gradients for the reference model 
-        '''
+        #turn of gradients for the reference model 
         p.requires_grad = False
+    '''
+    ema_lora={
+        name:param.data.clone().cpu()
+        for name,param in unet.name_parameters()
+        if param.required_grad
+    }
+    print(f"EMA tracking {len(ema_lora)} LoRA parameter tensors")
 
     # set up common image encoder for both the models 
     vae = pipe.vae.eval()
@@ -158,7 +168,8 @@ def main():
 
     train_loop(
         unet=unet,
-        ref_unet=ref_unet,
+        #ref_unet=ref_unet,
+        ema_lora=ema_lora,
         vae=vae,
         text_enc=text_enc,
         scheduler=scheduler,

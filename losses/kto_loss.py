@@ -66,13 +66,12 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     and multiply it with the binary mask which leaves behind only the mse inside the mask 
     so we get the average mse inside the mask for all 4 channels when divided by mask_pixels 
     gterm = (how wrong ref was in mask) - (how wrong train was in mask)
-    
+
     '''
     
     # KL-centering: compute mean KL divergence and normalize
     # This stabilizes training by preventing extreme values from dominating
-    kl = g_term.mean().detach()
-    kl = torch.clamp(kl, min=0.0)  # Prevent negative KL from destabilizing
+    kl = g_term.mean().detach().clamp(min=0) # Prevent negative KL from destabilizing
     g_term_centered = g_term - kl
     
     # Asymmetric label handling: convert binary labels to gradient direction
@@ -82,8 +81,7 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     label_sgn = 2.0 * labels_float - 1.0  # Converts [0, 1] to [-1, +1]
     
     # Scale preference signal by beta and apply sigmoid
-    label_scale_g = label_sgn * beta * g_term_centered
-    h = torch.sigmoid(label_scale_g)
+    h = torch.sigmoid(label_sgn * beta * g_term_centered)
 
     #reconstruction regularization term 
     unmask=(1-mask_l)
@@ -101,6 +99,6 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=1000.0, mask_weigh
     # For unsafe samples (label_sgn=-1):
     #   - When g_term > kl (model worse): h→0, loss→1 (good!)
     #   - When g_term < kl (model better): h→1, loss→0 (bad!)
-    loss = (1.0 - h).mean() + 0.3 * recon_loss
+    loss = (1.0 - h).mean() + 0.5 * recon_loss
     
     return loss

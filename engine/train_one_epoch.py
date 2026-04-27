@@ -7,7 +7,7 @@ from losses.kto_loss import kto_loss
 
 def train_loop(
     unet,
-    ref_unet,
+    ema_lora,
     vae,
     text_enc,
     scheduler,
@@ -51,7 +51,7 @@ def train_loop(
         device (str): Device to train on. Defaults to 'cuda'.
     """
     unet.train()
-    ref_unet.eval()
+    #ref_unet.eval()
     vae.eval()
     text_enc.eval()
 
@@ -84,8 +84,16 @@ def train_loop(
 
             with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                 pred_train = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with trainable net
+                original={}
+                for name,parm in unet.name_parameters():
+                    if param.require_grad:
+                        original[name]=param.data
+                        param.data=ema_lora[name].to(device=param.device,dtype=param.dtype)
                 with torch.no_grad():
-                    pred_ref = unet_forward(ref_unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with reference net
+                    pred_ref = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with reference net
+                for name,param in unet.name_parameters():
+                    if param.require_grad():
+                        param.data = original[name]
                 loss = kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=cfg["training"]["beta"])
                 loss = loss / grad_accum_steps
 
@@ -122,6 +130,14 @@ def train_loop(
 
                 # Increment global_step only when optimizer updates (i.e., after gradient accumulation)
                 global_step += 1
+
+                if global_step%20==0:
+                    with torch.no_grad():
+                        for name,param in unet.name_parameters():
+                            if param.require_grad():
+                                ema_lora[name] = (
+                                    0.999 * ema_lora[name].to(device=param.device,dtype=param.dtype) + 0.001 * param.data
+                                ).cpu()
 
                 if global_step % log_every == 0:
                     avg_loss = accum_loss / float(log_every)
