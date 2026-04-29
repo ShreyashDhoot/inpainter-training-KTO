@@ -1,11 +1,17 @@
 # Python
 __pycache__/
 *.pyc
+
+# Environment
 .env
+.env/
+
 # Training outputs
 wandb/
 checkpoints/
-checkpoint--*
-checkpoint--*/
+checkpoint-*/
 eval_outputs/
 hf_cache/
+
+# Jupyter
+.ipynb_checkpoints/

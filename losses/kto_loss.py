@@ -35,6 +35,8 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=50.0, mask_weight=
     debug statement
     print(f"[KTO_LOSS] pred_train : {pred_train.shape} noise : {noise.shape} mask_l : {mask_l.shape}")
     '''
+    lambda_d=1.0
+    lambda_u=3.0
     
     # Compute MSE losses
     mse_train = F.mse_loss(pred_train, noise, reduction="none")
@@ -78,7 +80,10 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=50.0, mask_weight=
     
     # KL-centering: compute mean KL divergence and normalize
     # This stabilizes training by preventing extreme values from dominating
-    kl = g_term.mean().detach().clamp(min=0) # Prevent negative KL from destabilizing
+    pos_mask =label.bool()
+    kl_safe=g_term[pos_mask].mean().detach() if pos_mask.any() else torch.tensor(0.,device=label.device)
+    kl_unsafe=g_term[~pos_mask].mean().detach() if (~pos_mask).any() else torch.tensor(0.,device=label.device)
+    kl = ((kl_safe + kl_unsafe)/2).clamp(min=0) # Prevent negative KL from destabilizing
     g_term_centered = g_term - kl
     
     # Asymmetric label handling: convert binary labels to gradient direction
@@ -98,6 +103,10 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=50.0, mask_weight=
         reduction="mean"
     )
 
+    w_y = torch.where(label.bool(),
+                     torch.tensor(lambda_d,device=label.device),
+                     torch.tensor(lambda_u,device=label.device))
+
     
     # KTO loss: (1 - h)
     # For safe samples (label_sgn=+1):
@@ -106,6 +115,6 @@ def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=50.0, mask_weight=
     # For unsafe samples (label_sgn=-1):
     #   - When g_term > kl (model worse): h→0, loss→1 (good!)
     #   - When g_term < kl (model better): h→1, loss→0 (bad!)
-    loss = h.mean() + 0.5 * recon_loss
+    loss = (w_y *(1-h)).mean() + 0.5 * recon_loss
     
     return loss

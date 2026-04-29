@@ -33,7 +33,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this training script, but no GPU is available.")
 
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:2")
     torch.cuda.set_device(device)
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
