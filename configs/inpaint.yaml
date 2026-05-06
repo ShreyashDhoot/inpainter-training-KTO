@@ -15,18 +15,22 @@ data:
   cache_dir: ./hf_cache
 
 training:
-  lr: 1.0e-4
-  warmup_steps: 250
-  max_steps: 1000
+  lr: 1.0e-5
+  warmup_steps: 800
+  max_steps: 6000
   max_epochs: 2
   batch_size: 32
   grad_accum_steps: 1
-  beta: 10.0
+  beta: 10
   num_workers: 16
   log_every: 50
   save_every: 250
-  grad_clip_norm: 1.0
+  grad_clip_norm: 0.5
   mixed_precision: fp16
+  min_unsafe_per_batch: 10
+  recon_weight: 150
+  identity_weight: 0.1
+  
 
 
 output:

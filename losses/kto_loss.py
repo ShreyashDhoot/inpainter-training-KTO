@@ -2,119 +2,187 @@ import torch
 import torch.nn.functional as F
 
 
-def kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=50.0, mask_weight=0):
-    """KTO (Kahneman-Tversky Optimization) loss with KL-centering and preference weighting.
-    
-    Implements KTO loss that encourages the trainable model to outperform the
-    reference model on safe/preferred samples (label=1) while matching or
-    underperforming on unsafe/adversarial samples (label=0).
-    
-    Key improvements over simple preference learning:
-    - KL-centering: normalizes preference signal relative to KL divergence from reference
-    - Asymmetric label handling: different gradient directions for safe vs. unsafe samples
-    - High-precision scaling: large beta value enables sharp preference signal
-    
-    Args:
-        pred_train (torch.Tensor): Noise predictions from trainable UNet,
-                                  shape (batch_size, 4, H, W).
-        pred_ref (torch.Tensor): Noise predictions from reference UNet,
-                                shape (batch_size, 4, H, W).
-        noise (torch.Tensor): Original noise target, shape (batch_size, 4, H, W).
-        label (torch.Tensor): Preference labels, shape (batch_size,).
-                             1.0 for safe/preferred, 0.0 for unsafe/adversarial.
-        mask_l (torch.Tensor): Inpainting mask in latent space,
-                      shape (batch_size, 1, H, W).
-        beta (float): Scaling factor for preference signal. Defaults to 1000.0.
-                     Higher values create sharper preference gradients.
-        mask_weight (float): Extra weight applied to masked regions. Defaults to 1.0.
-    
-    Returns:
-        torch.Tensor: Scalar KTO loss value.
+def _predict_z0(pred_noise, zt, t, scheduler):
+    """Reconstruct denoised latent z0 from noise prediction using DDPM formula."""
+    alpha_bar = scheduler.alphas_cumprod.to(device=zt.device, dtype=zt.dtype)
+    a = alpha_bar[t].view(-1, 1, 1, 1).sqrt()
+    sigma = (1 - alpha_bar[t]).view(-1, 1, 1, 1).sqrt()
+    return (zt - sigma * pred_noise) / a.clamp(min=1e-6)
+
+
+def kto_loss(
+    pred_train,
+    pred_ref,
+    noise,
+    label,
+    mask_l,
+    z0,
+    zt,
+    t,
+    scheduler,
+    beta=10,
+    recon_weight=150.0,
+    identity_weight=0.1,
+    kl_ema=None,
+    mask_weight=0,
+):
     """
-    '''
-    debug statement
-    print(f"[KTO_LOSS] pred_train : {pred_train.shape} noise : {noise.shape} mask_l : {mask_l.shape}")
-    '''
-    lambda_d=1.0
-    lambda_u=3.0
-    
-    # Compute MSE losses
-    mse_train = F.mse_loss(pred_train, noise, reduction="none")
-    mse_ref = F.mse_loss(pred_ref, noise, reduction="none")
-    
-    # broadcast the mask dimensions to fit the dimensions of the prediction 
-    mask_expanded = mask_l.expand_as(mse_train).to(dtype=mse_train.dtype)
-    
-    ## setting to 0 is causing the model to hack the alignment and paint all the masked regions blue 
-    # Apply mask weighting to emphasize inpainted regions
-    if mask_l is not None:
-        weight = 1.0 + mask_weight * mask_l.to(dtype=pred_train.dtype)
-        mse_train = mse_train * weight.expand_as(mse_train)
-        mse_ref = mse_ref * weight.expand_as(mse_ref)
-    
+    Fidelity-Guided KTO Loss.
 
-    # Average over spatial dimensions to get per-sample scalar loss
-    '''
-    mse_train = mse_train.mean(dim=[1, 2, 3])
-    mse_ref = mse_ref.mean(dim=[1, 2, 3])
-    '''
-    
-    # Preference gap: positive when reference is better (trainable is worse)
-    # g_term = mse_ref - mse_train
-    # For safe samples, we want g_term < 0 (trainable model better)
-    # For unsafe samples, we want g_term >= 0 (trainable model worse or equal)
+    Core change: g_term is now computed in z0-space (distance to original latent)
+    instead of noise-space. This provides:
+    - Manifold anchoring: z0 is a real image, so gradients stay on the image manifold
+    - Natural hinge: ref already fails on unsafe z0 (paints clothes), so
+      the model doesn't need to go to "void" to satisfy the loss
+    - Category consistency: works for both nudity (ref=safe) and violence (ref=unsafe)
 
-    mask_pixels = mask_expanded.sum(dim=[1,2,3]).clamp(min=1)
-    mse_train_masked = ( mse_train * mask_expanded ).sum(dim=[1,2,3]) / mask_pixels
-    mse_ref_masked = ( mse_ref * mask_expanded ).sum(dim=[1,2,3]) / mask_pixels
-    g_term = mse_ref_masked - mse_train_masked
+    Args:
+        pred_train: noise prediction from trainable UNet, (B, 4, H, W)
+        pred_ref:   noise prediction from frozen ref UNet, (B, 4, H, W)
+        noise:      ground-truth noise, (B, 4, H, W)
+        label:      1=safe, 0=unsafe, (B,)
+        mask_l:     binary mask in latent space, (B, 1, H, W)
+        z0:         clean original latent before noise, (B, 4, H, W)
+        zt:         noisy latent passed to UNet, (B, 4, H, W)
+        t:          timestep indices, (B,)
+        scheduler:  DDPMScheduler (for alphas_cumprod)
+        beta:       KTO temperature (lower = softer)
+        recon_weight: weight for background reconstruction loss
+        identity_weight: weight for identity guardrail (blue patch prevention)
+        kl_ema:     running EMA of KL scalar (float or None); if None, computed fresh
+        mask_weight: extra weight on masked region in MSE (0 = no extra weight)
+    """
 
-    '''
-    masked pixels just countes the number of pixels inside the mask generated 
-    in mse_tain_mask , mse_ref_mask we take the mse_train/ref i.e the per pixel mse over the whole image 
-    and multiply it with the binary mask which leaves behind only the mse inside the mask 
-    so we get the average mse inside the mask for all 4 channels when divided by mask_pixels 
-    gterm = (how wrong ref was in mask) - (how wrong train was in mask)
+    # ── 1. Reconstruct z0 predictions from noise predictions ─────────────
+    with torch.no_grad():
+        z0_pred_ref = _predict_z0(pred_ref.float(), zt.float(), t, scheduler)
 
-    '''
-    
-    # KL-centering: compute mean KL divergence and normalize
-    # This stabilizes training by preventing extreme values from dominating
-    pos_mask =label.bool()
-    kl_safe=g_term[pos_mask].mean().detach() if pos_mask.any() else torch.tensor(0.,device=label.device)
-    kl_unsafe=g_term[~pos_mask].mean().detach() if (~pos_mask).any() else torch.tensor(0.,device=label.device)
-    kl = ((kl_safe + kl_unsafe)/2).clamp(min=0) # Prevent negative KL from destabilizing
-    g_term_centered = g_term - kl
-    
-    # Asymmetric label handling: convert binary labels to gradient direction
-    # label=1 (safe): label_sgn = +1 (want to maximize model quality)
-    # label=0 (unsafe): label_sgn = -1 (want to minimize model quality / stay near reference)
-    labels_float = label.float()
-    label_sgn = 2.0 * labels_float - 1.0  # Converts [0, 1] to [-1, +1]
-    
-    # Scale preference signal by beta and apply sigmoid
-    h = torch.sigmoid(label_sgn * beta * g_term_centered)
+    z0_pred_train = _predict_z0(pred_train.float(), zt.float(), t, scheduler)
 
-    #reconstruction regularization term 
-    unmask=(1-mask_l)
-    recon_loss=F.mse_loss(
-        pred_train * unmask.expand_as(pred_train),
-        noise * unmask.expand_as(noise),
-        reduction="mean"
+    # ── 2. Per-sample masked MSE against original z0 (the anchor) ────────
+    mask_expanded = mask_l.expand_as(z0).to(dtype=torch.float32)
+    mask_pixels   = mask_expanded.sum(dim=[1, 2, 3]).clamp(min=1)
+
+    mse_train_z0 = F.mse_loss(z0_pred_train.float(), z0.float(), reduction="none")
+    mse_ref_z0   = F.mse_loss(z0_pred_ref.float(),   z0.float(), reduction="none")
+
+    if mask_weight > 0:
+        w = 1.0 + mask_weight * mask_l.to(dtype=torch.float32)
+        mse_train_z0 = mse_train_z0 * w.expand_as(mse_train_z0)
+        mse_ref_z0   = mse_ref_z0   * w.expand_as(mse_ref_z0)
+
+    mse_train_masked = (mse_train_z0 * mask_expanded).sum(dim=[1,2,3]) / mask_pixels
+    mse_ref_masked   = (mse_ref_z0   * mask_expanded).sum(dim=[1,2,3]) / mask_pixels
+
+    # ── 3. g_term: positive when train is MORE different from z0 than ref ─
+    # For unsafe (label=0): want train MSE > ref MSE → g_term > 0 = good
+    # For safe   (label=1): want train MSE < ref MSE → g_term < 0 = good
+    g_term = mse_train_masked - mse_ref_masked
+
+    # ── 4. Hinge clamp: prevent "void" pressure ───────────────────────────
+    # For unsafe: if train is ALREADY much worse than ref (g_term > threshold),
+    # stop pushing. The model has already achieved safety — no need to collapse.
+    # threshold = mean ref MSE (how badly ref fails to reconstruct z0)
+    ref_mse_mean = mse_ref_masked.mean().detach()
+    g_term_unsafe_cap = ref_mse_mean * 1.5   # at most 1.5× ref's own failure level
+    g_term = torch.where(
+        label.bool(),                        # safe samples: uncapped
+        g_term,
+        g_term.clamp(max=g_term_unsafe_cap), # unsafe samples: hinged
     )
 
-    w_y = torch.where(label.bool(),
-                     torch.tensor(lambda_d,device=label.device),
-                     torch.tensor(lambda_u,device=label.device))
+    # ── 5. KL centering ───────────────────────────────────────────────────
+    safe_mask = (label == 0)
+    unsafe_mask = (label == 1)
+    kl_safe   = g_term[safe_mask].mean().detach()  if safe_mask.any()  else torch.tensor(0., device=label.device)
+    kl_unsafe = g_term[unsafe_mask].mean().detach() if (unsafe_mask).any() else torch.tensor(0., device=label.device)
+    kl_current = (kl_safe + kl_unsafe) / 2.0
 
-    
-    # KTO loss: (1 - h)
-    # For safe samples (label_sgn=+1):
-    #   - When g_term < kl (model better): h→1, loss→0 (good!)
-    #   - When g_term > kl (model worse): h→0, loss→1 (bad!)
-    # For unsafe samples (label_sgn=-1):
-    #   - When g_term > kl (model worse): h→0, loss→1 (good!)
-    #   - When g_term < kl (model better): h→1, loss→0 (bad!)
-    loss = (w_y *(1-h)).mean() + 0.5 * recon_loss
-    
-    return loss
+    if kl_ema is not None:
+        # Use running EMA scalar passed from train loop for stability
+        kl_baseline = torch.tensor(kl_ema, device=label.device, dtype=g_term.dtype)
+    else:
+        kl_baseline = kl_current.clamp(min=0)
+
+    g_term_centered = g_term - kl_baseline
+
+    # ── 6. KTO sigmoid ────────────────────────────────────────────────────
+    label_sgn = 2.0 * label.float() - 1.0   # safe=-1, unsafe=+1
+    # For safe:   label_sgn=+1 → sigmoid(+β * g_term_centered)
+    #             want g_term_centered < 0 → h→1 → loss=(1-h)→0
+    # For unsafe: label_sgn=-1 → sigmoid(-β * g_term_centered)
+    #             want g_term_centered > 0 → sigmoid(-big)→0 → loss=(1-h)→1 ... wait
+    # Actually KTO for unsafe wants h→0, which means loss=(1-h)→1... that's wrong.
+    # Correct: KTO loss for unsafe = (1 - sigmoid(-β*g)) where we want g>0
+    # sigmoid(-β*g) with g>0 → sigmoid(negative) → small → (1-small)→large loss
+    # That means the model is being penalized for g>0 for unsafe — opposite of what we want.
+    # The correct KTO form: loss = 1 - h where h = sigmoid(label_sgn * β * g)
+    # For unsafe (label_sgn=-1, g>0): h = sigmoid(-β*g) → small → loss = (1-small) → large
+    # This is CORRECT because KTO wants to MINIMIZE this loss by REDUCING g for unsafe,
+    # but we want g to be LARGE for unsafe. So we need to flip for unsafe.
+    # Standard KTO: for desirable (safe) maximize reward; for undesirable (unsafe) ALSO try
+    # to push away but via KL constraint. The formulation is:
+    # loss_safe   = (1 - sigmoid( β * g_centered))   [minimize = maximize g]
+    # loss_unsafe = (1 - sigmoid(-β * g_centered))   [minimize = minimize g ... NO]
+    # Re-reading KTO paper: loss = E[w(x)*(1 - σ(β*(r(x)−z)))]
+    # where for unsafe: w=λ_u, r(x) = log(π/π_ref) which maps to -g_term in our case
+    # So for unsafe: argument = β * (-g_term_centered)
+    h = torch.sigmoid(label_sgn * beta * g_term_centered)
+
+    lambda_unsafe = 1.0   # safe weight
+    lambda_safe = 3.0   # unsafe weight (higher because unsafe is harder to learn)
+    w_y = torch.where(label.bool(),
+                      torch.tensor(lambda_safe, device=label.device),
+                      torch.tensor(lambda_unsafe, device=label.device))
+
+    kto_term = (w_y * (1.0 - h)).mean()
+
+    # ── 7. Background recon loss (unchanged — noise-space for unmasked) ───
+    unmask = (1.0 - mask_l).expand_as(pred_train)
+    recon_loss = F.mse_loss(
+        pred_train * unmask,
+        noise      * unmask,
+        reduction="mean",
+    )
+
+    # ── 8. Identity guardrail (blue patch killer) ─────────────────────────
+    # Penalizes large deviations of train from ref in z0-space GLOBALLY.
+    # Only activates when the model starts drifting (|g_term| > threshold).
+    # This keeps the model on the image manifold without constraining what it paints.
+    mse_gap_global = F.mse_loss(
+        z0_pred_train.float().detach(),   # detach for threshold check only
+        z0_pred_ref.float(),
+        reduction="none"
+    ).mean(dim=[1, 2, 3])
+
+    # Soft activation: linearly ramp up as gap grows
+    identity_gap = F.mse_loss(
+        z0_pred_train.float(),
+        z0_pred_ref.float().detach(),     # ref is anchor, not target
+        reduction="mean",
+    )
+    # Only penalize when model drifts > 0.1 from ref in z0-space
+    drift_threshold = 0.1
+    identity_loss = F.relu(identity_gap - drift_threshold)
+
+    # ── 9. Final loss ─────────────────────────────────────────────────────
+    loss = kto_term + recon_weight * recon_loss + identity_weight * identity_loss
+
+    # ── Debug dict (returned for logging) ─────────────────────────────────
+    debug = {
+        "g_term_mean":        g_term.mean().item(),
+        "g_term_std":         g_term.std().item(),
+        "g_term_centered":    g_term_centered.mean().item(),
+        "kl_current":         kl_current.item(),
+        "mse_train_z0":       mse_train_masked.mean().item(),
+        "mse_ref_z0":         mse_ref_masked.mean().item(),
+        "h_safe":             h[mask_safe].mean().item()  if mask_safe.any()  else 0.0,
+        "h_unsafe":           h[mask_unsafe].mean().item() if (mask_unsafe).any() else 0.0,
+        "kto_term":           kto_term.item(),
+        "recon_loss":         recon_loss.item(),
+        "identity_loss":      identity_loss.item(),
+        "identity_gap":       identity_gap.item(),
+        "ref_mse_cap":        g_term_unsafe_cap.item(),
+    }
+
+    return loss, debug

@@ -2,6 +2,7 @@ import os
 import yaml
 import copy
 import torch
+import math
 from torch.utils.data import DataLoader
 from dotenv import load_dotenv
 from diffusers import StableDiffusionInpaintPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler
@@ -19,6 +20,7 @@ from utils.logging import init_wandb, log_metrics, finish_wandb
 from engine.checkpoint import save_checkpoint
 from engine.evaluate import visual_eval
 from engine.train_one_epoch import train_loop
+from data.sampler import StratifiedBatchSampler 
 
 try:
     from utils.plotting import plot_training_metrics
@@ -33,7 +35,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this training script, but no GPU is available.")
 
-    device = torch.device("cuda:2")
+    device = torch.device("cuda:0")
     torch.cuda.set_device(device)
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -63,10 +65,18 @@ def main():
         cache_dir=cfg["data"]["cache_dir"],
     )
 
+    _labels = train_ds.get_all_labels()
+
+    stratified_sampler = StratifiedBatchSampler(
+        labels=_labels,
+        batch_size=cfg["training"]["batch_size"],
+        min_neg=cfg["training"].get("min_unsafe_per_batch",10),
+        shuffle=True,
+    )
+
     train_loader = DataLoader(
         train_ds, 
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=True,
+        batch_sampler=stratified_sampler,
         num_workers=cfg["training"]["num_workers"],
         pin_memory=True,
         persistent_workers=cfg["training"]["num_workers"] > 0,
@@ -108,18 +118,13 @@ def main():
     replacing this with ema-lora i.e the reference model remains static and as the learner 
     moves away from the reference it starts deviating and making blue patches so trying to 
     update the reference so the learner moves in a better direction for optimization
+    '''
     # make a deep copy for reference net 
     ref_unet = copy.deepcopy(unet).eval()
     for p in ref_unet.parameters():
         #turn of gradients for the reference model 
         p.requires_grad = False
-    '''
-    ema_lora={
-        name:param.data.clone().cpu()
-        for name,param in unet.named_parameters()
-        if param.requires_grad
-    }
-    print(f"EMA tracking {len(ema_lora)} LoRA parameter tensors")
+    ref_unet.to(device)
 
     # set up common image encoder for both the models 
     vae = pipe.vae.eval()
@@ -129,14 +134,17 @@ def main():
     # setting up the schedular
     scheduler = DDPMScheduler.from_pretrained(cfg["model"]["base_model"], subfolder="scheduler")
 
-    optimizer = torch.optim.AdamW(unet.parameters(), lr=cfg["training"]["lr"])
+    optimizer = torch.optim.AdamW(unet.parameters(), lr=cfg["training"]["lr"],eps=1e-6)
     total_steps = cfg["training"]["max_steps"]
     warmup_steps = cfg["training"]["warmup_steps"]
 
     def lr_lambda(step):
         if step < warmup_steps:
+            # linear warmup — same as before
             return max(1e-8, float(step + 1) / float(max(1, warmup_steps)))
-        return 1.0
+        # cosine decay after warmup
+        progress = float(step - warmup_steps) / float(max(1, cfg["training"]["max_steps"] - warmup_steps))
+        return max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     lr_sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scaler = torch.amp.GradScaler("cuda")
@@ -168,8 +176,7 @@ def main():
 
     train_loop(
         unet=unet,
-        #ref_unet=ref_unet,
-        ema_lora=ema_lora,
+        ref_unet=ref_unet,
         vae=vae,
         text_enc=text_enc,
         scheduler=scheduler,

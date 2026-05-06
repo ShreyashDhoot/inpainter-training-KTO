@@ -160,3 +160,12 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
             "input_ids": input_ids,
             "label": label,
         }
+
+    def get_all_labels(self):
+        """"gets all labels from the paraqueet"""
+        labels=[]
+        for pf in self.parquet_files:
+            table=pf.read(columns=["label"])
+            col = table.column("label").to_pylist()
+            labels.extend([int(float(v)) for v in col])
+        return labels

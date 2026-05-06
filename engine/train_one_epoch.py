@@ -1,13 +1,15 @@
 import torch
 import torch.nn.functional as F
+import copy
 
 from models.unet_wrapper import unet_forward
 from models.diffusion_utils import q_sample
 from losses.kto_loss import kto_loss
 
+
 def train_loop(
     unet,
-    ema_lora,
+    ref_unet,          # ← NEW: frozen static reference (pass from train.py)
     vae,
     text_enc,
     scheduler,
@@ -23,147 +25,163 @@ def train_loop(
     cfg,
     device="cuda",
 ):
-    """Main training loop for KTO-based inpainting model refinement.
-    
-    Implements the complete training loop including:
-    - Forward pass through trainable and reference UNets
-    - KTO loss computation with preference-based learning
-    - Gradient accumulation and mixed precision training
-    - Periodic checkpointing and visual evaluation
-    - Learning rate scheduling and metric logging
-    
-    Args:
-        unet (UNet2DConditionModel): Trainable UNet model.
-        ref_unet (UNet2DConditionModel): Frozen reference UNet for KTO loss.
-        vae (AutoencoderKL): VAE for encoding/decoding images.
-        text_enc (CLIPTextModel): Text encoder for prompt embeddings.
-        scheduler (DDPMScheduler): Noise scheduler for diffusion.
-        optimizer (torch.optim.AdamW): Optimizer for UNet parameters.
-        lr_sched (torch.optim.lr_scheduler.LambdaLR): Learning rate scheduler.
-        scaler (torch.amp.GradScaler): Gradient scaler for mixed precision.
-        train_loader (DataLoader): Training data loader.
-        pipe (StableDiffusionInpaintPipeline): Full inpainting pipeline.
-        val_vis_samples (list): Samples for visual evaluation.
-        wandb_log_fn (callable): Function to log metrics to weights & biases.
-        save_fn (callable): Function to save checkpoints.
-        visual_eval_fn (callable): Function to perform visual evaluation.
-        cfg (dict): Training configuration from YAML file.
-        device (str): Device to train on. Defaults to 'cuda'.
-    """
     unet.train()
-    #ref_unet.eval()
+    ref_unet.eval()    # always frozen
     vae.eval()
     text_enc.eval()
+    g_std_ema=None 
 
-    global_step = 0
-    micro_step = 0
-    accum_loss = 0.0
-    grad_norm = torch.tensor(0.0, device=device)
-    max_epochs = cfg["training"].get("max_epochs", 100)
+    global_step   = 0
+    micro_step    = 0
+    accum_loss    = 0.0
+    grad_norm     = torch.tensor(0.0, device=device)
+    kl_ema_scalar = None   # running EMA of KL scalar for centering
+
+    max_epochs       = cfg["training"].get("max_epochs", 100)
     grad_accum_steps = cfg["training"]["grad_accum_steps"]
-    log_every = cfg["training"]["log_every"]
+    log_every        = cfg["training"]["log_every"]
+    beta             = cfg["training"]["beta"]
+    recon_weight     = cfg["training"].get("recon_weight", 150.0)
+    identity_weight  = cfg["training"].get("identity_weight", 0.1)
+
+    # Accumulators for logging
     label_pos_count = 0
     label_neg_count = 0
-    mse_gap_sum = 0.0
-    mse_gap_count = 0
+    mse_gap_sum     = 0.0
+    mse_gap_count   = 0
+    debug_accum     = {}
 
     for epoch in range(max_epochs):
         for batch in train_loader:
-            z0 = batch["z0"].to(device, non_blocking=True)
+            z0            = batch["z0"].to(device, non_blocking=True)
             masked_latent = batch["masked_latent"].to(device, non_blocking=True)
-            mask_l = batch["mask_latent"].to(device, non_blocking=True)
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            label = batch["label"].to(device, non_blocking=True)
+            mask_l        = batch["mask_latent"].to(device, non_blocking=True)
+            input_ids     = batch["input_ids"].to(device, non_blocking=True)
+            label         = batch["label"].to(device, non_blocking=True)
 
             with torch.no_grad():
-                enc_hidden = text_enc(input_ids).last_hidden_state #<== tokenize prompt for CLIP to use 
+                enc_hidden = text_enc(input_ids).last_hidden_state
 
-            t = torch.randint(0, scheduler.config.num_train_timesteps, (z0.shape[0],), device=device) # sample random diffusion timestep 
-            noise = torch.randn_like(z0) # generate random noise resembling og image latent 
-            zt = q_sample(z0, t, noise, scheduler) #random noise added latent zt
+            t     = torch.randint(200,900, (z0.shape[0],), device=device)
+            noise = torch.randn_like(z0)
+            zt    = q_sample(z0, t, noise, scheduler)
 
             with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                pred_train = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with trainable net
-                original={}
-                for name,param in unet.named_parameters():
-                    if param.requires_grad:
-                        original[name]=param.data
-                        param.data=ema_lora[name].to(device=param.device,dtype=param.dtype)
+                # Trainable forward pass
+                pred_train = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent)
+
+                # Frozen reference forward pass — no weight swapping needed
                 with torch.no_grad():
-                    pred_ref = unet_forward(unet, zt, t, enc_hidden, mask_l, masked_latent) #making a forward pass with reference net
-                for name,param in unet.named_parameters():
-                    if param.requires_grad:
-                        param.data = original[name]
-                '''
-                Debug statement
-                print(f"pred_train :{pred_train.shape} pred_ref : {pred_ref.shape} noise : {noise.shape} mask_l: {mask_l.shape}")
-                '''
-                loss = kto_loss(pred_train, pred_ref, noise, label, mask_l, beta=cfg["training"]["beta"])
+                    pred_ref = unet_forward(ref_unet, zt, t, enc_hidden, mask_l, masked_latent)
+
+                loss, debug = kto_loss(
+                    pred_train     = pred_train,
+                    pred_ref       = pred_ref,
+                    noise          = noise,
+                    label          = label,
+                    mask_l         = mask_l,
+                    z0             = z0,
+                    zt             = zt,
+                    t              = t,
+                    scheduler      = scheduler,
+                    beta           = beta,
+                    recon_weight   = recon_weight,
+                    identity_weight= identity_weight,
+                    kl_ema         = kl_ema_scalar,
+                )
                 loss = loss / grad_accum_steps
 
-            with torch.no_grad():
-                mse_train = F.mse_loss(pred_train, noise, reduction="none").mean(dim=[1, 2, 3])
-                mse_ref = F.mse_loss(pred_ref, noise, reduction="none").mean(dim=[1, 2, 3])
-                mse_gap = (mse_ref - mse_train).abs().mean().item()
-                mse_gap_sum += mse_gap
-                mse_gap_count += 1
+                g_std_val = debug["g_term_std"]
+                if g_std_ema is None:
+                    g_std_ema = g_std_val
+                else:
+                    g_std_ema = 0.99 * g_std_ema + 0.01 * g_std_val
                 
-                log_ratio = -(mse_train - mse_ref)
+                if g_std_ema > 1e-9:
+                    beta = float(torch.clamp(
+                        torch.tensor(0.35 / g_std_ema),
+                        min=1.0, max=cfg["training"]["beta"]   # config beta = ceiling, not fixed value
+                    ))
 
+            # ── KL EMA scalar update (replaces the old weight-swap EMA) ──────
+            
+            with torch.no_grad():
+                kl_now = debug["kl_current"]
+                if kl_ema_scalar is None:
+                    kl_ema_scalar = kl_now
+                else:
+                    kl_ema_scalar = 0.999 * kl_ema_scalar + 0.001 * kl_now
+
+            # ── Logging accumulators ─────────────────────────────────────────
+            with torch.no_grad():
                 pos_mask = label.bool()
                 neg_mask = ~pos_mask
                 label_pos_count += int(pos_mask.sum().item())
                 label_neg_count += int(neg_mask.sum().item())
 
-                log_ratio_pos = log_ratio[pos_mask].mean() if pos_mask.any() else torch.tensor(0.0, device=device)
-                log_ratio_neg = log_ratio[neg_mask].mean() if neg_mask.any() else torch.tensor(0.0, device=device)
-                reward_gap = log_ratio_pos - log_ratio_neg
+                mse_gap = abs(debug["mse_train_z0"] - debug["mse_ref_z0"])
+                mse_gap_sum   += mse_gap
+                mse_gap_count += 1
+
+                for k, v in debug.items():
+                    debug_accum[k] = debug_accum.get(k, 0.0) + v
 
             scaler.scale(loss).backward()
-            # Track unscaled loss for clearer logging.
             accum_loss += loss.item() * grad_accum_steps
             micro_step += 1
 
             if micro_step % grad_accum_steps == 0:
                 scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), cfg["training"]["grad_clip_norm"])
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    unet.parameters(), cfg["training"]["grad_clip_norm"]
+                )
                 scaler.step(optimizer)
                 scaler.update()
                 lr_sched.step()
                 optimizer.zero_grad(set_to_none=True)
-
-                # Increment global_step only when optimizer updates (i.e., after gradient accumulation)
                 global_step += 1
 
-                if global_step%10==0:
-                    with torch.no_grad():
-                        for name,param in unet.named_parameters():
-                            if param.requires_grad:
-                                ema_lora[name] = (
-                                    0.995 * ema_lora[name].to(device=param.device,dtype=param.dtype) + 0.001 * param.data
-                                ).cpu()
-
                 if global_step % log_every == 0:
-                    avg_loss = accum_loss / float(log_every)
+                    avg_loss    = accum_loss / float(log_every)
                     avg_mse_gap = mse_gap_sum / float(max(1, mse_gap_count))
+                    avg_debug   = {k: v / float(log_every) for k, v in debug_accum.items()}
+
                     wandb_log_fn({
-                        "train/loss": avg_loss,
-                        "train/log_ratio_pos": log_ratio_pos.item(),
-                        "train/log_ratio_neg": log_ratio_neg.item(),
-                        "train/reward_gap": reward_gap.item(),
-                        "train/grad_norm": grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm),
-                        "train/lr": lr_sched.get_last_lr()[0],
-                        "train/epoch": epoch,
-                        "train/label_pos_count": label_pos_count,
-                        "train/label_neg_count": label_neg_count,
-                        "train/mse_gap_avg": avg_mse_gap,
+                        "train/loss":              avg_loss,
+                        "train/reward_gap":        avg_debug.get("g_term_mean", 0),
+                        "train/grad_norm":         grad_norm.item(),
+                        "train/lr":                lr_sched.get_last_lr()[0],
+                        "train/epoch":             epoch,
+                        "train/label_pos_count":   label_pos_count,
+                        "train/label_neg_count":   label_neg_count,
+                        "train/mse_gap_avg":       avg_mse_gap,
+                        "debug/g_term_mean":       avg_debug.get("g_term_mean", 0),
+                        "debug/g_term_std":        avg_debug.get("g_term_std", 0),
+                        "debug/kl_current":        avg_debug.get("kl_current", 0),
+                        "debug/kl_ema":            kl_ema_scalar or 0,
+                        "debug/mse_train_z0":      avg_debug.get("mse_train_z0", 0),
+                        "debug/mse_ref_z0":        avg_debug.get("mse_ref_z0", 0),
+                        "debug/h_safe":            avg_debug.get("h_safe", 0),
+                        "debug/h_unsafe":          avg_debug.get("h_unsafe", 0),
+                        "debug/identity_gap":      avg_debug.get("identity_gap", 0),
+                        "debug/identity_loss":     avg_debug.get("identity_loss", 0),
+                        "debug/ref_mse_cap":       avg_debug.get("ref_mse_cap", 0),
                     }, step=global_step)
-                    print(f"step={global_step} loss={avg_loss:.4f} reward_gap={reward_gap.item():.4f} pos={label_pos_count} neg={label_neg_count} mse_gap={avg_mse_gap:.6f}")
+
+                    print(
+                        f"step={global_step} loss={avg_loss:.4f} "
+                        f"g={avg_debug.get('g_term_mean',0):.4f}±{avg_debug.get('g_term_std',0):.4f} "
+                        f"h_safe={avg_debug.get('h_safe',0):.3f} h_unsafe={avg_debug.get('h_unsafe',0):.3f} "
+                        f"id_gap={avg_debug.get('identity_gap',0):.4f} "
+                        f"mse_z0_gap={avg_mse_gap:.4f} lr={lr_sched.get_last_lr()[0]:.2e}"
+                        f"beta={beta}"
+                    )
+
                     accum_loss = 0.0
-                    label_pos_count = 0
-                    label_neg_count = 0
+                    label_pos_count = label_neg_count = 0
                     mse_gap_sum = 0.0
                     mse_gap_count = 0
+                    debug_accum = {}
 
                 if global_step % cfg["training"]["save_every"] == 0:
                     save_fn(global_step, unet, optimizer, lr_sched, scaler, epoch)

@@ -11,9 +11,9 @@ library_name: diffusers
 pipeline_tag: image-to-image
 ---
 
-# ShreyashDhoot/v2
+# ShreyashDhoot/v3
 
-**Last updated:** 2026-04-28 06:34
+**Last updated:** 2026-05-06 04:41
 
 ## Model Description
 
@@ -23,8 +23,26 @@ Base model: [`runwayml/stable-diffusion-inpainting`](https://huggingface.co/runw
 ## Checkpoints
 
 - `checkpoint--1000`
+- `checkpoint--1250`
+- `checkpoint--1500`
+- `checkpoint--1750`
+- `checkpoint--2000`
+- `checkpoint--2250`
 - `checkpoint--250`
+- `checkpoint--2500`
+- `checkpoint--2750`
+- `checkpoint--3000`
+- `checkpoint--3250`
+- `checkpoint--3500`
+- `checkpoint--3750`
+- `checkpoint--4000`
+- `checkpoint--4250`
+- `checkpoint--4500`
+- `checkpoint--4750`
 - `checkpoint--500`
+- `checkpoint--5000`
+- `checkpoint--5250`
+- `checkpoint--5500`
 - `checkpoint--750`
 
 ## Example Eval Outputs
