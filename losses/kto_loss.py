@@ -20,11 +20,11 @@ def kto_loss(
     zt,
     t,
     scheduler,
-    beta=10,
-    recon_weight=150.0,
-    identity_weight=0.1,
+    beta=7,
+    recon_weight=75,
+    identity_weight=5,
     kl_ema=None,
-    mask_weight=0,
+    mask_weight=0.5,
 ):
     """
     Fidelity-Guided KTO Loss.
@@ -94,6 +94,7 @@ def kto_loss(
     # ── 5. KL centering ───────────────────────────────────────────────────
     safe_mask = (label == 0)
     unsafe_mask = (label == 1)
+    '''
     kl_safe   = g_term[safe_mask].mean().detach()  if safe_mask.any()  else torch.tensor(0., device=label.device)
     kl_unsafe = g_term[unsafe_mask].mean().detach() if (unsafe_mask).any() else torch.tensor(0., device=label.device)
     kl_current = (kl_safe + kl_unsafe) / 2.0
@@ -102,8 +103,21 @@ def kto_loss(
         # Use running EMA scalar passed from train loop for stability
         kl_baseline = torch.tensor(kl_ema, device=label.device, dtype=g_term.dtype)
     else:
-        kl_baseline = kl_current.clamp(min=0)
+        kl_baseline = kl_current.clamp(min=-0.05,max=0.15)
 
+    g_term_centered = g_term - kl_baseline
+    '''
+    # ── 5. KL centering — safe-only baseline ─────────────────────────────
+    if safe_mask.any():
+        kl_baseline_raw = g_term[safe_mask].mean().detach()
+    else:
+        kl_baseline_raw = torch.tensor(0., device=label.device, dtype=g_term.dtype)
+    
+    if kl_ema is not None:
+        kl_baseline = torch.tensor(kl_ema, device=label.device, dtype=g_term.dtype)
+    else:
+        kl_baseline = kl_baseline_raw.clamp(min=-0.02, max=0.05)  # ← now actually uses it
+    
     g_term_centered = g_term - kl_baseline
 
     # ── 6. KTO sigmoid ────────────────────────────────────────────────────
@@ -130,7 +144,7 @@ def kto_loss(
     h = torch.sigmoid(label_sgn * beta * g_term_centered)
 
     lambda_unsafe = 1.0   # safe weight
-    lambda_safe = 3.0   # unsafe weight (higher because unsafe is harder to learn)
+    lambda_safe = 4.0   # unsafe weight (higher because unsafe is harder to learn)
     w_y = torch.where(label.bool(),
                       torch.tensor(lambda_safe, device=label.device),
                       torch.tensor(lambda_unsafe, device=label.device))
@@ -162,8 +176,8 @@ def kto_loss(
         reduction="mean",
     )
     # Only penalize when model drifts > 0.1 from ref in z0-space
-    drift_threshold = 0.1
-    identity_loss = F.relu(identity_gap - drift_threshold)
+    drift_threshold = 0.02
+    identity_loss = (F.relu(identity_gap - drift_threshold)) ** 2
 
     # ── 9. Final loss ─────────────────────────────────────────────────────
     loss = kto_term + recon_weight * recon_loss + identity_weight * identity_loss
@@ -176,8 +190,8 @@ def kto_loss(
         "kl_current":         kl_current.item(),
         "mse_train_z0":       mse_train_masked.mean().item(),
         "mse_ref_z0":         mse_ref_masked.mean().item(),
-        "h_safe":             h[mask_safe].mean().item()  if mask_safe.any()  else 0.0,
-        "h_unsafe":           h[mask_unsafe].mean().item() if (mask_unsafe).any() else 0.0,
+        "h_safe":             h[safe_mask].mean().item()  if safe_mask.any()  else 0.0,
+        "h_unsafe":           h[unsafe_mask].mean().item() if (unsafe_mask).any() else 0.0,
         "kto_term":           kto_term.item(),
         "recon_loss":         recon_loss.item(),
         "identity_loss":      identity_loss.item(),

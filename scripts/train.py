@@ -70,7 +70,7 @@ def main():
     stratified_sampler = StratifiedBatchSampler(
         labels=_labels,
         batch_size=cfg["training"]["batch_size"],
-        min_neg=cfg["training"].get("min_unsafe_per_batch",10),
+        min_safe=cfg["training"].get("min_safe_per_batch",8),
         shuffle=True,
     )
 
@@ -139,11 +139,28 @@ def main():
     warmup_steps = cfg["training"]["warmup_steps"]
 
     def lr_lambda(step):
+        warmup_steps = cfg["training"]["warmup_steps"] # e.g., 800
+        # Add a constant phase of ~8000 steps (approx 3 epochs of your Unsafe set)
+        constant_steps = 8000 
+        total_steps = cfg["training"]["max_steps"]
+    
+        # 1. Linear Warmup Phase
         if step < warmup_steps:
-            # linear warmup — same as before
             return max(1e-8, float(step + 1) / float(max(1, warmup_steps)))
-        # cosine decay after warmup
-        progress = float(step - warmup_steps) / float(max(1, cfg["training"]["max_steps"] - warmup_steps))
+    
+        # 2. Constant Phase (The "Breakthrough" Zone)
+        # This keeps the LR at 100% of your peak (e.g., 4e-06)
+        if step < warmup_steps + constant_steps:
+            return 1.0
+    
+        # 3. Cosine Decay Phase
+        # Decay only starts after step 8800 in this example
+        decay_steps = total_steps - warmup_steps - constant_steps
+        if decay_steps <= 0:
+            return 1.0
+            
+        progress = float(step - warmup_steps - constant_steps) / float(decay_steps)
+        # Standard cosine decay down to 10% of peak
         return max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     lr_sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)

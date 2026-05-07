@@ -1,7 +1,7 @@
 import os
 
 import wandb
-
+WANDB_API_KEY='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'
 
 def _has_netrc_wandb_login(netrc_path="/root/.netrc"):
     """Return True if the netrc file has credentials for api.wandb.ai."""
