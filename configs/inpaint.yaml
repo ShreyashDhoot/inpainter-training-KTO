@@ -1,12 +1,12 @@
 model:
   base_model: runwayml/stable-diffusion-inpainting
-  hf_dataset_repo: ShreyashDhoot/KTO-latents
+  hf_dataset_repo: ShreyashDhoot/KTO-clean-latents
   use_lora: true
   lora:
-    r: 16
-    lora_alpha: 16
-    target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
-    lora_dropout: 0.05
+    r: 128
+    lora_alpha: 128
+    target_modules: ["to_q", "to_k", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"]
+    lora_dropout: 0.01
     bias: "none"
 
 data:
@@ -15,21 +15,36 @@ data:
   cache_dir: ./hf_cache
 
 training:
-  lr: 1.8e-6
+  # Bumping LR back up for clean 10k data. 
+  # High-signal gradients don't need to be as timid.
+  lr: 8.0e-7
   warmup_steps: 1000
-  max_steps: 10000
-  max_epochs: 4
-  batch_size: 32
+  max_steps: 5000
+  max_epochs: 10 # 10k images at batch 16 = ~625 steps per epoch. 
+  batch_size: 16
   grad_accum_steps: 1
-  beta: 7
-  num_workers: 16
+  beta: 30
+  num_workers: 22
   log_every: 50
   save_every: 500
-  grad_clip_norm: 0.5
+  grad_clip_norm: 1.0 # Slightly higher to allow the 'Violence' torque to bite
   mixed_precision: fp16
-  min_safe_per_batch: 10
-  recon_weight: 75
-  identity_weight: 5
+  
+  # NEW: Tri-Class Batching Structure
+  # These are picked up by your new TriClassBatchSampler
+  safe_count_per_batch: 8
+  nudity_count_per_batch: 4
+  violence_count_per_batch: 4
+
+  # NEW: Class-Wise KTO Torque
+  kto_coeffs:
+    safe: 1.0
+    nudity: 5
+    violence: 5
+
+  # The Steel Anchor weights
+  recon_weight: 0
+  identity_weight: 10
   
 
 

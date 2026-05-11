@@ -69,8 +69,10 @@ def main():
 
     stratified_sampler = StratifiedBatchSampler(
         labels=_labels,
-        batch_size=cfg["training"]["batch_size"],
-        min_safe=cfg["training"].get("min_safe_per_batch",8),
+        batch_size=cfg["training"]["batch_size"], # Should be 16
+        safe_count=8,
+        nudity_count=4,
+        violence_count=4,
         shuffle=True,
     )
 

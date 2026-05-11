@@ -12,6 +12,7 @@ checkpoints/
 checkpoint-*/
 eval_outputs/
 hf_cache/
+merged_v1/
 
 # Jupyter
 .ipynb_checkpoints/

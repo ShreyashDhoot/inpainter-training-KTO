@@ -66,6 +66,9 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
             self.cum_rows.append(self.cum_rows[-1] + n)
             self.file_to_idx[f] = len(self.parquet_files)
             self.parquet_files.append(pf)
+            if len(self.parquet_files) == 1:
+                print(f"DEBUG: Found columns in {f}:")
+                print(pf.schema.names)
 
             rg_cum = [0]
             for rg_idx in range(pf.num_row_groups):
@@ -128,18 +131,7 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         """Retrieve a sample from the dataset.
         
-        Locates the sample, reads it from disk, and converts to PyTorch tensors.
-        
-        Args:
-            idx (int): Sample index.
-        
-        Returns:
-            dict: Dictionary containing:
-                - 'z0' (torch.Tensor): Clean latent, shape (4, H, W).
-                - 'masked_latent' (torch.Tensor): Masked latent, shape (4, H, W).
-                - 'mask_latent' (torch.Tensor): Inpainting mask, shape (1, H, W).
-                - 'input_ids' (torch.Tensor): Text prompt token IDs.
-                - 'label' (torch.Tensor): Quality label for KTO loss.
+        Updated to return one-hot encoded labels: [safe, nudity, violence].
         """
         file_idx, local_idx = self._locate(idx)
         row = self._read_row(self.files[file_idx], local_idx)
@@ -147,25 +139,51 @@ class LatentInpaintDataset(torch.utils.data.Dataset):
         z0 = torch.from_numpy(np.asarray(row["z0"], dtype=np.float32))
         masked_latent = torch.from_numpy(np.asarray(row["masked_latent"], dtype=np.float32))
         mask_latent = torch.from_numpy(np.asarray(row["mask_latent"], dtype=np.float32))
+        
         if mask_latent.ndim == 2:
             mask_latent = mask_latent.unsqueeze(0)
+            
         input_ids = torch.from_numpy(np.asarray(row["input_ids"], dtype=np.int64))
-        label = torch.tensor(float(row["label"]), dtype=torch.float32)
-        #print(f"z0: {z0.shape} masked_latent: {masked_latent.shape} mask_latent:{mask_latent.shape}")
+
+        # NEW: Construct the 3-element one-hot label for the training loop
+        # Format: [safe, nudity, violence]
+        label = torch.tensor([
+            float(row["safe"]), 
+            float(row["nudity"]), 
+            float(row["violence"])
+        ], dtype=torch.float32)
 
         return {
             "z0": z0,
             "masked_latent": masked_latent,
             "mask_latent": mask_latent,
             "input_ids": input_ids,
-            "label": label,
+            "label": label,  # This is now shape [3]
         }
 
     def get_all_labels(self):
-        """"gets all labels from the paraqueet"""
-        labels=[]
+        """
+        Extracts all one-hot labels and returns an (N, 3) matrix.
+        Crucial for the TriClassBatchSampler.
+        """
+        all_labels = []
+        
+        print(f"[Dataset] Loading all labels for stratified sampling...")
         for pf in self.parquet_files:
-            table=pf.read(columns=["label"])
-            col = table.column("label").to_pylist()
-            labels.extend([int(float(v)) for v in col])
-        return labels
+            # Efficiently read only the necessary columns
+            table = pf.read(columns=["safe", "nudity", "violence"])
+            
+            # Convert columns to numpy arrays
+            s = np.array(table.column("safe").to_pylist(), dtype=np.int64)
+            n = np.array(table.column("nudity").to_pylist(), dtype=np.int64)
+            v = np.array(table.column("violence").to_pylist(), dtype=np.int64)
+            
+            # Stack into (File_N, 3) matrix
+            file_labels = np.stack([s, n, v], axis=1)
+            all_labels.append(file_labels)
+        
+        # Combine all files into a single (Total_N, 3) matrix
+        final_labels = np.concatenate(all_labels, axis=0)
+        print(f"[Dataset] Successfully loaded labels matrix with shape: {final_labels.shape}")
+        
+        return final_labels
