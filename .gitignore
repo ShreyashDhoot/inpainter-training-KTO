@@ -16,3 +16,7 @@ merged_v1/
 
 # Jupyter
 .ipynb_checkpoints/
+
+sft_merged_for_bco/
+sft_refusal_ckpt/
+merged_v1

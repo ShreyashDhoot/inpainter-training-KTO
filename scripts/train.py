@@ -35,7 +35,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this training script, but no GPU is available.")
 
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:3")
     torch.cuda.set_device(device)
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -88,19 +88,44 @@ def main():
 
     val_vis_samples = [val_ds[i] for i in range(min(30, len(val_ds)))]
 
-    # setting up the stable diffusion pipeline 
-    pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        cfg["model"]["base_model"], 
-        torch_dtype=torch.float16,
-        safety_checker=None,
-    )
+    # ── Pipeline loading ──────────────────────────────────────────────────
+    # Supports two modes controlled by config:
+    #
+    #   merged_base: false  (default)
+    #     Loads the original HuggingFace model. safety_checker=None is passed
+    #     because the base runwayml model ships with one we don't need.
+    #
+    #   merged_base: true
+    #     Loads a local merged pipeline produced by merge_lora_into_base.py.
+    #     These pipelines were saved without a safety_checker, so we must NOT
+    #     pass safety_checker=None (it would error on the missing component).
+    #     The merged UNet already has the previous round's alignment baked in
+    #     as full float16 weights — no LoRA layers present yet.
+    #
+    is_merged_base = cfg["model"].get("merged_base", False)
 
-    #initialized the unet 
+    if is_merged_base:
+        print(f"[train] Loading MERGED base from: {cfg['model']['base_model']}")
+        pipe = StableDiffusionInpaintPipeline.from_pretrained(
+            cfg["model"]["base_model"],
+            torch_dtype=torch.float16,
+            safety_checker=None,
+        )
+    else:
+        print(f"[train] Loading BASE model from: {cfg['model']['base_model']}")
+        pipe = StableDiffusionInpaintPipeline.from_pretrained(
+            cfg["model"]["base_model"],
+            torch_dtype=torch.float16,
+            safety_checker=None,
+        )
+
+    # ── LoRA injection ────────────────────────────────────────────────────
+    # Whether we loaded from the original base or a merged checkpoint, we
+    # always inject a FRESH set of LoRA adapters here. The merged weights
+    # become the new "base" that the adapters train on top of.
+    # This is correct: get_peft_model adds zero-initialised A/B matrices,
+    # so the model's output is identical to the merged base at step 0.
     unet = pipe.unet
-    
-    # ================================================
-    # LoRA injection setup
-    # ================================================
     if cfg["model"].get("use_lora", False):
         lora_config = LoraConfig(
             r=cfg["model"]["lora"]["r"],
